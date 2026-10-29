@@ -1,0 +1,39 @@
+const campusDb = db.getSiblingDB("campus_smart_resource_allocation");
+
+if (!campusDb.getCollectionNames().includes("maintenance_reports")) {
+  campusDb.createCollection("maintenance_reports", {
+    validator: {
+      $jsonSchema: {
+        bsonType: "object",
+        required: [
+          "resourceId", "resourceName", "reportedBy", "title", "condition",
+          "severity", "notes", "tags", "status", "createdAt", "updatedAt"
+        ],
+        properties: {
+          resourceId: { bsonType: "string" },
+          resourceName: { bsonType: "string" },
+          departmentId: { bsonType: ["string", "null"] },
+          reportedBy: {
+            bsonType: "object",
+            required: ["userId", "name"],
+            properties: {
+              userId: { bsonType: "string" },
+              name: { bsonType: "string" }
+            }
+          },
+          title: { bsonType: "string", minLength: 4, maxLength: 120 },
+          condition: { enum: ["GOOD", "FAIR", "POOR", "DAMAGED"] },
+          severity: { enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"] },
+          notes: { bsonType: "string", minLength: 10, maxLength: 2000 },
+          tags: { bsonType: "array", items: { bsonType: "string" }, maxItems: 10 },
+          status: { enum: ["OPEN", "IN_PROGRESS", "RESOLVED"] },
+          createdAt: { bsonType: "date" },
+          updatedAt: { bsonType: "date" }
+        }
+      }
+    }
+  });
+}
+
+campusDb.maintenance_reports.createIndex({ createdAt: -1 });
+campusDb.maintenance_reports.createIndex({ severity: 1, status: 1 });
