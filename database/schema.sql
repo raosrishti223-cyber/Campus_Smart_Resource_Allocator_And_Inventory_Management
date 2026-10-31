@@ -395,3 +395,31 @@ BEGIN
 END//
 
 DELIMITER ;
+
+-- Correlated query: open requests and the number of other locations with safe surplus.
+SELECT rr.request_id, res.name AS resource,
+       rr.quantity - rr.fulfilled_quantity AS quantity_remaining,
+       rr.priority,
+       (
+         SELECT COUNT(*)
+         FROM inventory source_stock
+         JOIN locations source_location
+           ON source_location.location_id = source_stock.location_id
+         WHERE source_stock.resource_id = rr.resource_id
+           AND source_stock.on_hand - source_stock.checked_out > source_stock.minimum_required
+           AND (
+             source_location.department_id IS NULL
+             OR source_location.department_id <> rr.department_id
+           )
+       ) AS safe_source_locations
+FROM resource_requests rr
+JOIN resources res ON res.resource_id = rr.resource_id
+WHERE rr.status IN ('PENDING', 'PARTIALLY_FULFILLED')
+  AND rr.fulfilled_quantity < rr.quantity
+  AND EXISTS (
+    SELECT 1
+    FROM locations destination_location
+    WHERE destination_location.department_id = rr.department_id
+      AND destination_location.is_active = TRUE
+  )
+ORDER BY FIELD(rr.priority, 'URGENT', 'HIGH', 'MEDIUM', 'LOW'), rr.created_at;
