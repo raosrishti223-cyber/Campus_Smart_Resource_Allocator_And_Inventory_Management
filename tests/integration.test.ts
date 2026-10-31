@@ -83,6 +83,16 @@ test(
       }),
     });
     assert.equal(forbiddenAccountCreate.status, 403);
+
+    const forbiddenAccountStatusChange = await fetch(new URL("/api/admin/accounts", baseUrl), {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        cookie: setCookie.split(";")[0],
+      },
+      body: JSON.stringify({ userId: 1, isActive: false }),
+    });
+    assert.equal(forbiddenAccountStatusChange.status, 403);
   },
 );
 

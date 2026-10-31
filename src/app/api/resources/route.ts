@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth";
+import { availableCheckoutAllocation } from "@/lib/usage-allocation";
 import { apiError } from "@/lib/http";
 import { getPool } from "@/lib/mysql";
 
@@ -20,21 +21,9 @@ export async function GET(request: Request) {
                   'onHand', i.on_hand,
                   'checkedOut', i.checked_out,
                   'myCheckedOut', COALESCE(mine_usage.checked_out, 0),
-                  'myCheckoutClosed', COALESCE(
-                    mine_usage.last_return_sequence > mine_allocation.latest_transfer_sequence
-                    AND mine_usage.checked_out = 0,
-                    0
-                  ),
-                  'myAvailableAllocation', GREATEST(
-                    CASE
-                      WHEN a.resource_type = 'REUSABLE' AND mine_usage.last_return_sequence IS NOT NULL
-                        THEN COALESCE(mine_allocation.allocation_since_return, 0)
-                      ELSE COALESCE(mine_allocation.allocated, 0)
-                    END -
-                    COALESCE(mine_usage.checked_out, 0) -
-                    COALESCE(mine_usage.consumed, 0),
-                    0
-                  ),
+                  'myAllocated', COALESCE(mine_allocation.allocated, 0),
+                  'myCheckoutTotal', COALESCE(mine_usage.checked_out_total, 0),
+                  'myConsumed', COALESCE(mine_usage.consumed, 0),
                   'minimumRequired', i.minimum_required,
                   'reorderLevel', i.reorder_level
                 ))
@@ -45,37 +34,15 @@ export async function GET(request: Request) {
        LEFT JOIN departments d ON d.department_id = l.department_id
        LEFT JOIN (
          SELECT t.resource_id, t.destination_location_id AS location_id,
-                SUM(t.quantity) AS allocated,
-                SUM(CASE
-                  WHEN transfer_transaction.transaction_id > COALESCE(latest_return.last_return_sequence, 0)
-                    THEN t.quantity
-                  ELSE 0
-                END) AS allocation_since_return,
-                MAX(transfer_transaction.transaction_id) AS latest_transfer_sequence
+                SUM(t.quantity) AS allocated
          FROM transfers t
          JOIN resource_requests r ON r.request_id = t.request_id
-         LEFT JOIN stock_transactions transfer_transaction
+         JOIN stock_transactions transfer_transaction
            ON transfer_transaction.resource_id = t.resource_id
           AND transfer_transaction.location_id = t.destination_location_id
           AND transfer_transaction.transaction_type = 'TRANSFER_IN'
           AND transfer_transaction.reference_type = 'TRANSFER'
           AND transfer_transaction.reference_id = t.transfer_id
-         LEFT JOIN (
-           SELECT ru.resource_id, ru.location_id, ru.actor_id,
-                  MAX(return_transaction.transaction_id) AS last_return_sequence
-           FROM resource_usage ru
-           JOIN stock_transactions return_transaction
-             ON return_transaction.resource_id = ru.resource_id
-            AND return_transaction.location_id = ru.location_id
-            AND return_transaction.transaction_type = 'RETURN'
-            AND return_transaction.reference_type = 'USAGE'
-            AND return_transaction.reference_id = ru.usage_id
-           WHERE ru.action = 'RETURN'
-           GROUP BY ru.resource_id, ru.location_id, ru.actor_id
-         ) latest_return
-           ON latest_return.resource_id = t.resource_id
-          AND latest_return.location_id = t.destination_location_id
-          AND latest_return.actor_id = r.requested_by
          WHERE r.requested_by = ?
          GROUP BY t.resource_id, t.destination_location_id
        ) mine_allocation
@@ -84,15 +51,9 @@ export async function GET(request: Request) {
        LEFT JOIN (
          SELECT ru.resource_id, ru.location_id,
                 GREATEST(SUM(CASE ru.action WHEN 'CHECKOUT' THEN ru.quantity WHEN 'RETURN' THEN -ru.quantity ELSE 0 END), 0) AS checked_out,
-                MAX(CASE WHEN ru.action = 'RETURN' THEN usage_transaction.transaction_id END) AS last_return_sequence,
+                SUM(CASE ru.action WHEN 'CHECKOUT' THEN ru.quantity ELSE 0 END) AS checked_out_total,
                 SUM(CASE ru.action WHEN 'CONSUME' THEN ru.quantity ELSE 0 END) AS consumed
          FROM resource_usage ru
-         LEFT JOIN stock_transactions usage_transaction
-           ON usage_transaction.resource_id = ru.resource_id
-          AND usage_transaction.location_id = ru.location_id
-          AND usage_transaction.transaction_type = 'RETURN'
-          AND usage_transaction.reference_type = 'USAGE'
-          AND usage_transaction.reference_id = ru.usage_id
          WHERE ru.actor_id = ?
          GROUP BY ru.resource_id, ru.location_id
        ) mine_usage ON mine_usage.resource_id = i.resource_id AND mine_usage.location_id = i.location_id
@@ -125,8 +86,11 @@ export async function GET(request: Request) {
           onHand: Number(location.onHand),
           checkedOut: Number(location.checkedOut),
           myCheckedOut: Number(location.myCheckedOut),
-          myCheckoutClosed: Boolean(Number(location.myCheckoutClosed)),
-          myAvailableAllocation: Number(location.myAvailableAllocation),
+          myAvailableAllocation: availableCheckoutAllocation(
+            Number(location.myAllocated),
+            Number(location.myConsumed),
+            Number(location.myCheckoutTotal),
+          ),
           minimumRequired: Number(location.minimumRequired),
           reorderLevel: Number(location.reorderLevel),
           })),

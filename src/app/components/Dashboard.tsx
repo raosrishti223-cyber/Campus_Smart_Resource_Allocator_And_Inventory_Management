@@ -19,7 +19,6 @@ type ResourceLocation = {
   onHand: number;
   checkedOut: number;
   myCheckedOut: number;
-  myCheckoutClosed: boolean;
   myAvailableAllocation: number;
   minimumRequired: number;
   reorderLevel: number;
@@ -511,8 +510,7 @@ function LocationUsageActions({ resource, location, user, busyKey, onPerform }: 
   const reusable = resource.resource_type === "REUSABLE";
   const maximum = reusable ? Math.max(personalAvailable, location.myCheckedOut) : personalAvailable;
   const canReturn = reusable && location.myCheckedOut > 0;
-  const canCheckout = reusable && personalAvailable > 0 &&
-    !location.myCheckoutClosed;
+  const canCheckout = reusable && personalAvailable > 0;
   const canConsume = !reusable && personalAvailable > 0;
 
   async function submitUsage(selectedAction: "CHECKOUT" | "RETURN" | "CONSUME") {
@@ -553,7 +551,6 @@ function LocationUsageActions({ resource, location, user, busyKey, onPerform }: 
     {reusable && canReturn && <button className="text-button" disabled={actionBusy || Number(quantity) < 1 || Number(quantity) > location.myCheckedOut} onClick={() => void submitUsage("RETURN")}>Return</button>}
     {reusable && canCheckout && <button className="text-button" disabled={actionBusy || Number(quantity) < 1 || Number(quantity) > personalAvailable} onClick={() => void submitUsage("CHECKOUT")}>Check out</button>}
     {!reusable && canConsume && <button className="text-button" disabled={actionBusy || Number(quantity) < 1 || Number(quantity) > personalAvailable} onClick={() => void submitUsage("CONSUME")}>Record use</button>}
-    {reusable && location.myCheckoutClosed && <span className="usage-unavailable">Returned · checkout closed</span>}
     {!canReturn && !canCheckout && !canConsume && <span className="usage-unavailable">No available units above the protected minimum</span>}
   </div>;
 }
@@ -935,6 +932,23 @@ function AccountsPanel({ accounts, departments, loading, busyKey, onPerform, onR
     }
   }
 
+  async function setAccountActive(account: ManagedAccount) {
+    const nextIsActive = !account.isActive;
+    if (!window.confirm(`${nextIsActive ? "Reactivate" : "Deactivate"} ${account.fullName}'s account? ${nextIsActive ? "They will be able to sign in again." : "They will no longer be able to sign in; their history will be preserved."}`)) {
+      return;
+    }
+
+    const updated = await onPerform(
+      `account-status-${account.userId}`,
+      () => api("/api/admin/accounts", {
+        method: "PATCH",
+        body: JSON.stringify({ userId: account.userId, isActive: nextIsActive }),
+      }),
+      nextIsActive ? "User account reactivated." : "User account deactivated.",
+    );
+    if (updated) await onRefresh();
+  }
+
   return <div className="content-grid account-grid">
     <section className="panel account-form-panel">
       <div className="panel-heading"><div><span className="eyebrow">ADMINISTRATION</span><h2>Create a staff or student login</h2></div><span className="round-icon"><UserRoundPlus size={16} /></span></div>
@@ -959,6 +973,14 @@ function AccountsPanel({ accounts, departments, loading, busyKey, onPerform, onR
         <div className="account-info"><strong>{account.fullName}</strong><span>{account.email}</span><small>{account.departmentName}</small></div>
         <Badge kind={account.role === "STAFF" ? "status-progress" : "status-open"}>{account.role}</Badge>
         {!account.isActive && <Badge kind="priority-high">INACTIVE</Badge>}
+        <button
+          className="button button-secondary button-small"
+          disabled={busyKey === `account-status-${account.userId}`}
+          onClick={() => void setAccountActive(account)}
+          type="button"
+        >
+          {busyKey === `account-status-${account.userId}` ? "Updating..." : account.isActive ? "Deactivate" : "Reactivate"}
+        </button>
       </article>)}</div>}
     </section>
   </div>;

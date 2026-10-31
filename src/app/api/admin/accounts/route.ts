@@ -14,6 +14,11 @@ const accountSchema = z.object({
   departmentId: z.coerce.number().int().positive(),
 });
 
+const accountStatusSchema = z.object({
+  userId: z.coerce.number().int().positive(),
+  isActive: z.boolean(),
+});
+
 function isDuplicateEmailError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ER_DUP_ENTRY";
 }
@@ -84,6 +89,48 @@ export async function POST(request: Request) {
       if (isDuplicateEmailError(error)) {
         return NextResponse.json({ error: "An account with this email address already exists." }, { status: 409 });
       }
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    return apiError(error);
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const admin = await requireSession(["ADMIN"]);
+    const body = accountStatusSchema.parse(await request.json());
+    const connection = await getConnection();
+    try {
+      await connection.beginTransaction();
+      const [accountRows] = await connection.execute<RowDataPacket[]>(
+        "SELECT role, is_active FROM users WHERE user_id = ? FOR UPDATE",
+        [body.userId],
+      );
+      const account = accountRows[0];
+      if (!account || !["STAFF", "STUDENT"].includes(String(account.role))) {
+        await connection.rollback();
+        return NextResponse.json({ error: "Staff or student account was not found." }, { status: 404 });
+      }
+
+      const isCurrentlyActive = Boolean(account.is_active);
+      if (isCurrentlyActive !== body.isActive) {
+        await connection.execute(
+          "UPDATE users SET is_active = ? WHERE user_id = ?",
+          [body.isActive, body.userId],
+        );
+        await connection.execute(
+          "INSERT INTO audit_events (actor_id, action, entity_type, entity_id) VALUES (?, ?, 'user', ?)",
+          [admin.userId, body.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED", body.userId],
+        );
+      }
+
+      await connection.commit();
+      return NextResponse.json({ userId: String(body.userId), isActive: body.isActive });
+    } catch (error) {
+      await connection.rollback();
       throw error;
     } finally {
       connection.release();

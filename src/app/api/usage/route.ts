@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireSession } from "@/lib/auth";
 import { apiError } from "@/lib/http";
 import { getConnection, getPool } from "@/lib/mysql";
+import { availableCheckoutAllocation } from "@/lib/usage-allocation";
 
 const usageSchema = z.object({
   resourceId: z.coerce.number().int().positive(),
@@ -144,24 +145,12 @@ export async function POST(request: Request) {
                 AND transfer_transaction.transaction_type = 'TRANSFER_IN'
                 AND transfer_transaction.reference_type = 'TRANSFER'
                 AND transfer_transaction.reference_id = t.transfer_id
-               WHERE rr.requested_by = ?
-                 AND t.resource_id = ?
-                 AND t.destination_location_id = ?
-                 AND transfer_transaction.transaction_id > COALESCE((
-                   SELECT MAX(return_transaction.transaction_id)
-                   FROM resource_usage ru
-                   JOIN stock_transactions return_transaction
-                     ON return_transaction.resource_id = ru.resource_id
-                    AND return_transaction.location_id = ru.location_id
-                    AND return_transaction.transaction_type = 'RETURN'
-                    AND return_transaction.reference_type = 'USAGE'
-                    AND return_transaction.reference_id = ru.usage_id
-                   WHERE ru.resource_id = ? AND ru.location_id = ?
-                     AND ru.actor_id = ? AND ru.action = 'RETURN'
-                 ), 0)
+                WHERE rr.requested_by = ?
+                  AND t.resource_id = ?
+                  AND t.destination_location_id = ?
              ), 0) AS allocated,
              COALESCE((
-               SELECT SUM(quantity)
+                SELECT SUM(quantity)
                FROM resource_usage
                WHERE resource_id = ? AND location_id = ? AND actor_id = ? AND action = 'CONSUME'
              ), 0) AS consumed,
@@ -171,55 +160,25 @@ export async function POST(request: Request) {
                WHERE resource_id = ? AND location_id = ? AND actor_id = ?
              ), 0), 0) AS checked_out,
              COALESCE((
-               SELECT MAX(transfer_transaction.transaction_id)
-               FROM transfers t
-               JOIN resource_requests rr ON rr.request_id = t.request_id
-               JOIN stock_transactions transfer_transaction
-                 ON transfer_transaction.resource_id = t.resource_id
-                AND transfer_transaction.location_id = t.destination_location_id
-                AND transfer_transaction.transaction_type = 'TRANSFER_IN'
-                AND transfer_transaction.reference_type = 'TRANSFER'
-                AND transfer_transaction.reference_id = t.transfer_id
-               WHERE rr.requested_by = ?
-                 AND t.resource_id = ?
-                 AND t.destination_location_id = ?
-             ), 0) AS latest_transfer_sequence,
-             COALESCE((
-               SELECT MAX(return_transaction.transaction_id)
-               FROM resource_usage ru
-               JOIN stock_transactions return_transaction
-                 ON return_transaction.resource_id = ru.resource_id
-                AND return_transaction.location_id = ru.location_id
-                AND return_transaction.transaction_type = 'RETURN'
-                AND return_transaction.reference_type = 'USAGE'
-                AND return_transaction.reference_id = ru.usage_id
-               WHERE ru.resource_id = ? AND ru.location_id = ?
-                 AND ru.actor_id = ? AND ru.action = 'RETURN'
-             ), 0) AS last_return_sequence`,
+               SELECT SUM(quantity)
+               FROM resource_usage
+               WHERE resource_id = ? AND location_id = ? AND actor_id = ? AND action = 'CHECKOUT'
+             ), 0) AS checked_out_total`,
           [
             user.userId, body.resourceId, body.locationId,
             body.resourceId, body.locationId, user.userId,
             body.resourceId, body.locationId, user.userId,
-            body.resourceId, body.locationId, user.userId,
-            user.userId, body.resourceId, body.locationId,
             body.resourceId, body.locationId, user.userId,
           ],
         );
         const ownAllocation = Number(allocationRows[0].allocated);
         const ownConsumed = Number(allocationRows[0].consumed);
         userCheckedOut = Math.min(checkedOut, Number(allocationRows[0].checked_out));
-        userAvailableAllocation = Math.max(0, ownAllocation - ownConsumed - userCheckedOut);
-        if (
-          body.action === "CHECKOUT" &&
-          Number(allocationRows[0].last_return_sequence) > Number(allocationRows[0].latest_transfer_sequence) &&
-          userCheckedOut === 0
-        ) {
-          await connection.rollback();
-          return NextResponse.json(
-            { error: "Checkout is closed for this resource at this location because your checked-out units have been returned." },
-            { status: 409 },
-          );
-        }
+        userAvailableAllocation = availableCheckoutAllocation(
+          ownAllocation,
+          ownConsumed,
+          Number(allocationRows[0].checked_out_total),
+        );
       }
       if (body.action === "RETURN") {
         const [usageRows] = await connection.execute<RowDataPacket[]>(

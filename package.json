@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test tests/recommendation.test.ts",
+    "test": "tsx --test tests/recommendation.test.ts tests/checkout.test.ts",
     "test:integration": "tsx --test tests/integration.test.ts",
     "db:seed": "node --env-file=.env.local scripts/seed.mjs",
     "db:seed:demo": "node --env-file=.env.local scripts/seed-demo-users.mjs"

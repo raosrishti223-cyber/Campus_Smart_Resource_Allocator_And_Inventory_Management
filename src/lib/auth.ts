@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
+import { getPool } from "@/lib/mysql";
 
 export const SESSION_COOKIE = "campus_session";
 const SESSION_DURATION_SECONDS = 60 * 60 * 8;
@@ -76,7 +77,15 @@ export async function readSession(token: string): Promise<SessionUser | null> {
 
 export async function getSession(): Promise<SessionUser | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  return token ? readSession(token) : null;
+  const user = token ? await readSession(token) : null;
+  if (!user) return null;
+
+  const [rows] = await getPool().execute(
+    "SELECT is_active FROM users WHERE user_id = ? LIMIT 1",
+    [user.userId],
+  );
+  const account = (rows as Array<{ is_active: number | boolean }>)[0];
+  return account && Boolean(account.is_active) ? user : null;
 }
 
 export async function requireSession(roles?: UserRole[]): Promise<SessionUser> {
